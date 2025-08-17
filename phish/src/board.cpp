@@ -544,6 +544,16 @@ void Board::undo_move() {
     BoardState st = states.back();
     states.pop_back();
 
+    if (st.wasNull) {
+        // Restore directly from saved state of null move
+        stm = opposite(stm);
+        zobrist = st.zobristKey;
+        castlingRights = st.castlingRights;
+        epSquare = st.epSquare;
+        halfmoveClock = st.halfmoveClock;
+        return;
+    }
+
     Move m = st.move;
     int from = m.from();
     int to = m.to();
@@ -587,6 +597,32 @@ void Board::undo_move() {
             else if (to == 58) { remove_piece(59); put_piece(56, make_piece(BLACK, ROOK)); }
         }
     }
+}
+
+bool Board::make_null_move() {
+    if (in_check_now()) return false;
+    BoardState st{};
+    st.zobristKey = zobrist;
+    st.castlingRights = castlingRights;
+    st.epSquare = epSquare;
+    st.halfmoveClock = halfmoveClock;
+    st.move = Move();
+    st.capturedPiece = PIECE_EMPTY;
+    st.wasNull = true;
+
+    states.push_back(st);
+
+    if (epSquare != -1) zobrist ^= zobKeys.epFile[file_of(epSquare)];
+    epSquare = -1;
+
+    stm = opposite(stm);
+    zobrist ^= zobKeys.side;
+    ++halfmoveClock;
+    return true;
+}
+
+void Board::undo_null_move() {
+    // Unused: null undo is handled inline in undo_move()
 }
 
 Move Board::parse_uci_move(const std::string &uciMove) const {

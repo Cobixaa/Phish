@@ -13,6 +13,7 @@ struct BoardState {
     int halfmoveClock;
     Move move; // move that led to this state
     int capturedPiece; // PIECE_EMPTY or piece code
+    bool wasNull {false};
 };
 
 class Board {
@@ -27,6 +28,10 @@ public:
     void generate_pseudo_legal_moves(std::vector<ScoredMove> &out) const;
     bool make_move(const Move &m);
     void undo_move();
+
+    // Null move
+    bool make_null_move();
+    void undo_null_move();
 
     // Parsing/formatting
     Move parse_uci_move(const std::string &uciMove) const;
@@ -50,6 +55,7 @@ public:
     // Utilities
     void clear();
     bool is_draw() const; // threefold or 50-move
+    inline bool in_check_now() const { return in_check(stm); }
 
 private:
     // Representation

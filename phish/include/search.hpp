@@ -24,8 +24,12 @@ private:
     std::atomic<bool> stopSignal {false};
     std::thread worker;
 
-    // History heuristics
+    // History and killers
     int history[2][64][64]{};
+    Move killers[128][2]{};
+
+    // Counters
+    std::atomic<long long> nodes {0};
 
     // Limits
     SearchLimits limits;
@@ -35,7 +39,7 @@ private:
     // Main
     void think();
     Move iterative_deepening();
-    int negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLen);
+    int negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLen, bool allowNull = true);
     int qsearch(int alpha, int beta, int ply);
 
     // Utils

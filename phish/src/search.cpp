@@ -11,6 +11,8 @@ void Search::set_board(Board *b) { board = b; }
 void Search::clear() {
     tt.clear();
     std::memset(history, 0, sizeof(history));
+    std::memset(killers, 0, sizeof(killers));
+    nodes = 0;
 }
 
 void Search::set_hash_mb(int mb) { tt.resize_mb(static_cast<size_t>(mb)); }
@@ -72,17 +74,21 @@ Move Search::iterative_deepening() {
     Move pv[128];
     int pvLen = 0;
 
+    int aspirationWindow = 30;
+
     for (int depth = 1; depth <= maxDepth; ++depth) {
         int alpha = -INF, beta = INF;
+        if (depth > 3 && bestScore > -INF/2) { alpha = bestScore - aspirationWindow; beta = bestScore + aspirationWindow; }
         int score = negamax(depth, alpha, beta, 0, pv, pvLen);
-        if (stopSignal) break;
-        if (score > bestScore && pvLen > 0) {
-            bestScore = score;
-            bestMove = pv[0];
+        if ((score <= alpha || score >= beta) && !stopSignal) {
+            alpha = -INF; beta = INF; // fail-low/high, re-search full window
+            score = negamax(depth, alpha, beta, 0, pv, pvLen);
+            aspirationWindow = std::min(500, aspirationWindow * 2);
         }
-        // UCI info
+        if (stopSignal) break;
+        if (score > bestScore && pvLen > 0) { bestScore = score; bestMove = pv[0]; }
         long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
-        std::cout << "info depth " << depth << " score cp " << score << " time " << elapsed << " pv ";
+        std::cout << "info depth " << depth << " score cp " << score << " time " << elapsed << " nodes " << nodes.load() << " pv ";
         for (int i = 0; i < pvLen; ++i) std::cout << board->move_to_uci(pv[i]) << ' ';
         std::cout << '\n' << std::flush;
         if (time_up()) break;
@@ -96,8 +102,9 @@ static inline int mvv_lva(PieceType cap, PieceType att) {
     return victim[cap] * 100 - attacker[att];
 }
 
-int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLen) {
+int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLen, bool allowNull) {
     if (stopSignal || time_up()) return 0;
+    nodes++;
 
     TTEntry tte; bool hasTT = tt.probe(board->key(), tte);
     if (hasTT && tte.depth >= depth) {
@@ -115,6 +122,21 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
 
     // Checkmate/stalemate/draw detection
     if (board->is_draw()) return DRAW_SCORE;
+
+    // Static eval for pruning and move ordering
+    int staticEval = evaluate(*board);
+
+    // Null-move pruning (avoid in check and near mate scores)
+    if (allowNull && depth >= 3 && !board->in_check_now() && staticEval >= beta) {
+        if (board->make_null_move()) {
+            int R = 2 + (depth / 4); // dynamic reduction
+            Move dummyPv[2]; int dummyLen = 0;
+            int score = -negamax(depth - 1 - R, -beta, -beta + 1, ply + 1, dummyPv, dummyLen, false);
+            board->undo_move();
+            if (score >= beta) return score;
+        }
+    }
+
     std::vector<ScoredMove> moves;
     board->generate_legal_moves(moves);
     if (moves.empty()) {
@@ -125,40 +147,47 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
         return DRAW_SCORE;
     }
 
-    // Static eval for TT and move ordering
-    int staticEval = evaluate(*board);
-
-    // Move ordering
+    // Move ordering: TT, captures MVV-LVA, killers, history
     for (auto &sm : moves) {
         Move m = sm.move;
         int score = 0;
-        if (m.is_capture()) score = 100000 + mvv_lva(m.captured_type(), m.moved_type());
-        else score = history[board->side_to_move()][m.from()][m.to()];
-        sm.score = score;
-    }
-    if (hasTT) {
-        Move ttMove = Move(tte.bestMove); // only partial info, but prefer it highly
-        for (auto &sm : moves) {
-            if (sm.move.from() == ttMove.from() && sm.move.to() == ttMove.to()) sm.score += 200000;
+        if (hasTT) {
+            Move ttMove = Move(tte.bestMove);
+            if (m.from() == ttMove.from() && m.to() == ttMove.to()) score += 300000;
         }
+        if (m.is_capture()) score += 100000 + mvv_lva(m.captured_type(), m.moved_type());
+        if (!m.is_capture()) {
+            if (killers[ply][0].v && m.v == killers[ply][0].v) score += 90000;
+            else if (killers[ply][1].v && m.v == killers[ply][1].v) score += 80000;
+            score += history[board->side_to_move()][m.from()][m.to()];
+        }
+        sm.score = score;
     }
     std::sort(moves.begin(), moves.end(), [](const ScoredMove &a, const ScoredMove &b){ return a.score > b.score; });
 
     Move bestMove;
     int bestScore = -INF;
     int originalAlpha = alpha;
-    int localPvLen = 0;
+
+    int moveCount = 0;
 
     for (size_t i = 0; i < moves.size(); ++i) {
         Move m = moves[i].move;
         if (!board->make_move(m)) continue;
+        ++moveCount;
+
+        // Late move pruning for quiet moves far down the list
+        if (depth <= 3 && !m.is_capture() && moveCount > 8 + depth) {
+            board->undo_move();
+            continue;
+        }
 
         Move childPv[128]; int childPvLen = 0;
         int score;
         if (i == 0) score = -negamax(depth - 1, -beta, -alpha, ply + 1, childPv, childPvLen);
         else {
-            // Late Move Reduction (simple)
-            int reduction = (depth >= 3 && !m.is_capture()) ? 1 : 0;
+            int reduction = 0;
+            if (depth >= 3 && !m.is_capture()) reduction = 1 + (moveCount > 4);
             score = -negamax(depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, childPv, childPvLen);
             if (score > alpha) score = -negamax(depth - 1, -beta, -alpha, ply + 1, childPv, childPvLen);
         }
@@ -175,8 +204,11 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
                 pvLen = childPvLen + 1;
             }
             if (alpha >= beta) {
-                // Update history for quiet moves causing beta-cutoff
-                if (!m.is_capture()) history[board->side_to_move()][m.from()][m.to()] += depth * depth;
+                // Update history and killers on quiet beta cutoff
+                if (!m.is_capture()) {
+                    history[board->side_to_move()][m.from()][m.to()] += depth * depth;
+                    if (killers[ply][0].v != m.v) { killers[ply][1] = killers[ply][0]; killers[ply][0] = m; }
+                }
                 break;
             }
         }
@@ -190,6 +222,7 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
 }
 
 int Search::qsearch(int alpha, int beta, int ply) {
+    nodes++;
     int standPat = evaluate(*board);
     if (standPat >= beta) return standPat;
     if (standPat > alpha) alpha = standPat;
@@ -197,7 +230,6 @@ int Search::qsearch(int alpha, int beta, int ply) {
     std::vector<ScoredMove> moves;
     board->generate_pseudo_legal_moves(moves);
 
-    // Only consider captures, promotions, and checks would be better but we'll do captures + promotions
     moves.erase(std::remove_if(moves.begin(), moves.end(), [&](const ScoredMove &sm){
         const Move &m = sm.move; return !(m.is_capture() || m.is_promo());
     }), moves.end());
