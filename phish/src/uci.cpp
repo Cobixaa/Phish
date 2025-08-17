@@ -1,0 +1,106 @@
+#include "uci.hpp"
+#include "board.hpp"
+#include "search.hpp"
+#include <iostream>
+#include <sstream>
+#include <vector>
+#include <cctype>
+
+static std::vector<std::string> split(const std::string &s) {
+    std::istringstream iss(s);
+    std::vector<std::string> out;
+    std::string t;
+    while (iss >> t) out.push_back(t);
+    return out;
+}
+
+void Uci::loop() {
+    Board board;
+    Search search;
+    search.set_board(&board);
+
+    std::string line;
+    for (;;) {
+        if (!std::getline(std::cin, line)) break;
+        if (line.empty()) continue;
+        auto tokens = split(line);
+        const std::string &cmd = tokens[0];
+
+        if (cmd == "uci") {
+            std::cout << "id name phish" << '\n';
+            std::cout << "id author Cursor-GPT" << '\n';
+            std::cout << "option name Hash type spin default 64 min 1 max 4096" << '\n';
+            std::cout << "option name Threads type spin default 1 min 1 max 1" << '\n';
+            std::cout << "uciok" << '\n' << std::flush;
+        } else if (cmd == "isready") {
+            std::cout << "readyok" << '\n' << std::flush;
+        } else if (cmd == "ucinewgame") {
+            board.set_startpos();
+            search.clear();
+        } else if (cmd == "setoption") {
+            // setoption name Hash value N
+            std::string name, value; int v = 0;
+            for (size_t i = 1; i + 1 < tokens.size(); ++i) {
+                if (tokens[i] == "name") {
+                    name.clear();
+                    size_t j = i + 1;
+                    while (j < tokens.size() && tokens[j] != "value") {
+                        if (!name.empty()) name.push_back(' ');
+                        name += tokens[j++];
+                    }
+                    i = j - 1;
+                } else if (tokens[i] == "value" && i + 1 < tokens.size()) {
+                    value = tokens[++i];
+                }
+            }
+            if (name == "Hash") {
+                try { v = std::stoi(value); } catch (...) { v = 64; }
+                search.set_hash_mb(v);
+            }
+        } else if (cmd == "position") {
+            // position [fen <fenstring> | startpos ]  moves <move1> ....
+            size_t i = 1;
+            if (i < tokens.size() && tokens[i] == "startpos") {
+                board.set_startpos();
+                ++i;
+            } else if (i < tokens.size() && tokens[i] == "fen") {
+                std::string fen;
+                ++i;
+                while (i < tokens.size() && tokens[i] != "moves") {
+                    if (!fen.empty()) fen.push_back(' ');
+                    fen += tokens[i++];
+                }
+                board.set_fen(fen);
+            }
+            // apply moves
+            i = 0;
+            for (size_t k = 0; k < tokens.size(); ++k) if (tokens[k] == "moves") { i = k + 1; break; }
+            for (; i < tokens.size(); ++i) {
+                const std::string &mstr = tokens[i];
+                Move m = board.parse_uci_move(mstr);
+                if (m.is_null()) break;
+                board.make_move(m);
+            }
+        } else if (cmd == "go") {
+            SearchLimits limits;
+            // parse go options
+            for (size_t i = 1; i + 1 <= tokens.size(); ++i) {
+                if (i < tokens.size() && tokens[i] == "wtime") { limits.wtime_ms = std::stoll(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "btime") { limits.btime_ms = std::stoll(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "winc") { limits.winc_ms = std::stoll(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "binc") { limits.binc_ms = std::stoll(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "movetime") { limits.movetime_ms = std::stoll(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "movestogo") { limits.movestogo = std::stoi(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "depth") { limits.depth = std::stoi(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "nodes") { limits.nodes = std::stoll(tokens[++i]); }
+                else if (i < tokens.size() && tokens[i] == "infinite") { limits.infinite = true; }
+            }
+            search.start(limits);
+        } else if (cmd == "stop") {
+            search.stop();
+        } else if (cmd == "quit" || cmd == "exit") {
+            search.stop();
+            break;
+        }
+    }
+}
