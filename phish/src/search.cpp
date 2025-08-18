@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 Search::Search() {}
 
@@ -126,8 +127,18 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
     // Static eval for pruning and move ordering
     int staticEval = evaluate(*board);
 
+    // Razoring: if static eval is well below alpha near the horizon, try qsearch
+    bool inCheck = board->in_check_now();
+    if (!inCheck && depth <= 2 && !hasTT) {
+        static const int RAZOR_MARGIN[3] = {0, 200, 500};
+        if (staticEval + RAZOR_MARGIN[depth] <= alpha) {
+            int r = qsearch(alpha, beta, ply);
+            if (r <= alpha) return r;
+        }
+    }
+
     // Null-move pruning (avoid in check and near mate scores)
-    if (allowNull && depth >= 3 && !board->in_check_now() && staticEval >= beta) {
+    if (allowNull && depth >= 3 && !inCheck && staticEval >= beta) {
         if (board->make_null_move()) {
             int R = 2 + (depth / 4); // dynamic reduction
             Move dummyPv[2]; int dummyLen = 0;
@@ -138,7 +149,7 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
     }
 
     std::vector<ScoredMove> moves;
-    board->generate_legal_moves(moves);
+    board->generate_legal_moves_nc(moves);
     if (moves.empty()) {
         if (board->side_to_move() == WHITE ? board->square_attacked(lsb(board->piece_bb(WHITE, KING)), BLACK)
                                            : board->square_attacked(lsb(board->piece_bb(BLACK, KING)), WHITE)) {
@@ -170,26 +181,43 @@ int Search::negamax(int depth, int alpha, int beta, int ply, Move *pv, int &pvLe
     int originalAlpha = alpha;
 
     int moveCount = 0;
+    bool inPV = (beta - alpha) > 1;
 
     for (size_t i = 0; i < moves.size(); ++i) {
         Move m = moves[i].move;
         if (!board->make_move(m)) continue;
         ++moveCount;
 
+        // Determine if the move gives check (for extension and pruning safety)
+        bool givesCheck = board->in_check_now();
+
+        // Futility pruning: shallow depth, not in check, quiet move, and static eval far below alpha
+        if (!inCheck && !givesCheck && !m.is_capture() && depth <= 3 && !inPV) {
+            static const int FUT_MARGIN[4] = {0, 150, 300, 500};
+            if (staticEval + FUT_MARGIN[depth] <= alpha) {
+                board->undo_move();
+                continue;
+            }
+        }
+
         // Late move pruning for quiet moves far down the list
-        if (depth <= 3 && !m.is_capture() && moveCount > 8 + depth) {
+        if (depth <= 3 && !m.is_capture() && moveCount > 8 + depth && !givesCheck) {
             board->undo_move();
             continue;
         }
 
         Move childPv[128]; int childPvLen = 0;
         int score;
-        if (i == 0) score = -negamax(depth - 1, -beta, -alpha, ply + 1, childPv, childPvLen);
+        int newDepth = depth - 1 + (givesCheck ? 1 : 0);
+        if (i == 0) score = -negamax(newDepth, -beta, -alpha, ply + 1, childPv, childPvLen);
         else {
             int reduction = 0;
-            if (depth >= 3 && !m.is_capture()) reduction = 1 + (moveCount > 4);
-            score = -negamax(depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, childPv, childPvLen);
-            if (score > alpha) score = -negamax(depth - 1, -beta, -alpha, ply + 1, childPv, childPvLen);
+            if (depth >= 3 && !m.is_capture()) {
+                reduction = 1 + (moveCount > 4) + (depth >= 5);
+                if (givesCheck) reduction = std::max(0, reduction - 1);
+            }
+            score = -negamax(newDepth - reduction, -alpha - 1, -alpha, ply + 1, childPv, childPvLen);
+            if (score > alpha) score = -negamax(newDepth, -beta, -alpha, ply + 1, childPv, childPvLen);
         }
         board->undo_move();
 
@@ -234,8 +262,21 @@ int Search::qsearch(int alpha, int beta, int ply) {
         const Move &m = sm.move; return !(m.is_capture() || m.is_promo());
     }), moves.end());
 
+    // Order captures by MVV-LVA
+    for (auto &sm : moves) {
+        const Move &m = sm.move;
+        sm.score = 100000 + mvv_lva(m.captured_type(), m.moved_type());
+        if (m.is_promo()) sm.score += 50000;
+    }
+    std::sort(moves.begin(), moves.end(), [](const ScoredMove &a, const ScoredMove &b){ return a.score > b.score; });
+
     for (auto &sm : moves) {
         Move m = sm.move;
+        // Delta pruning: skip captures that cannot possibly raise alpha
+        static const int V[7] = { 100, 320, 330, 500, 900, 20000, 0 };
+        int optimisticGain = V[m.captured_type()] + (m.is_promo() ? (V[QUEEN] - V[PAWN]) : 0);
+        if (standPat + optimisticGain + 50 < alpha) continue;
+
         if (!board->make_move(m)) continue;
         int score = -qsearch(-beta, -alpha, ply + 1);
         board->undo_move();

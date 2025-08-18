@@ -243,6 +243,18 @@ void Board::generate_legal_moves(std::vector<ScoredMove> &out) const {
     }
 }
 
+void Board::generate_legal_moves_nc(std::vector<ScoredMove> &out) {
+    std::vector<ScoredMove> pseudo;
+    pseudo.reserve(128);
+    generate_pseudo_legal_moves(pseudo);
+    for (const auto &sm : pseudo) {
+        if (make_move(sm.move)) {
+            out.push_back(sm);
+            undo_move();
+        }
+    }
+}
+
 void Board::gen_pawn_moves(Color side, std::vector<ScoredMove> &out) const {
     Bitboard pawns = pieceBB[side][PAWN];
     Bitboard us = occByColor[side];

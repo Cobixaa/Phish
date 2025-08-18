@@ -25,6 +25,8 @@ public:
 
     // Move handling
     void generate_legal_moves(std::vector<ScoredMove> &out) const;
+    // Faster variant for search: generates legal moves by making/undoing on this board (no full copy)
+    void generate_legal_moves_nc(std::vector<ScoredMove> &out);
     void generate_pseudo_legal_moves(std::vector<ScoredMove> &out) const;
     bool make_move(const Move &m);
     void undo_move();
