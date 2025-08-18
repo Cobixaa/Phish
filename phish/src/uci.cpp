@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <cctype>
+#include <charconv>
 
 static std::vector<std::string> split(const std::string &s) {
     std::istringstream iss(s);
@@ -12,6 +13,20 @@ static std::vector<std::string> split(const std::string &s) {
     std::string t;
     while (iss >> t) out.push_back(t);
     return out;
+}
+
+static inline bool parse_int_str(const std::string &s, int &out) {
+    const char *b = s.data();
+    const char *e = b + s.size();
+    auto res = std::from_chars(b, e, out);
+    return res.ec == std::errc();
+}
+
+static inline bool parse_ll_str(const std::string &s, long long &out) {
+    const char *b = s.data();
+    const char *e = b + s.size();
+    auto res = std::from_chars(b, e, out);
+    return res.ec == std::errc();
 }
 
 void Uci::loop() {
@@ -54,7 +69,8 @@ void Uci::loop() {
                 }
             }
             if (name == "Hash") {
-                try { v = std::stoi(value); } catch (...) { v = 64; }
+                v = 64;
+                parse_int_str(value, v);
                 search.set_hash_mb(v);
             }
         } else if (cmd == "position") {
@@ -85,14 +101,14 @@ void Uci::loop() {
             SearchLimits limits;
             // parse go options
             for (size_t i = 1; i + 1 <= tokens.size(); ++i) {
-                if (i < tokens.size() && tokens[i] == "wtime") { limits.wtime_ms = std::stoll(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "btime") { limits.btime_ms = std::stoll(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "winc") { limits.winc_ms = std::stoll(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "binc") { limits.binc_ms = std::stoll(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "movetime") { limits.movetime_ms = std::stoll(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "movestogo") { limits.movestogo = std::stoi(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "depth") { limits.depth = std::stoi(tokens[++i]); }
-                else if (i < tokens.size() && tokens[i] == "nodes") { limits.nodes = std::stoll(tokens[++i]); }
+                if (i < tokens.size() && tokens[i] == "wtime") { long long tmp = 0; if (i + 1 < tokens.size() && parse_ll_str(tokens[i+1], tmp)) limits.wtime_ms = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "btime") { long long tmp = 0; if (i + 1 < tokens.size() && parse_ll_str(tokens[i+1], tmp)) limits.btime_ms = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "winc") { long long tmp = 0; if (i + 1 < tokens.size() && parse_ll_str(tokens[i+1], tmp)) limits.winc_ms = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "binc") { long long tmp = 0; if (i + 1 < tokens.size() && parse_ll_str(tokens[i+1], tmp)) limits.binc_ms = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "movetime") { long long tmp = 0; if (i + 1 < tokens.size() && parse_ll_str(tokens[i+1], tmp)) limits.movetime_ms = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "movestogo") { int tmp = 0; if (i + 1 < tokens.size() && parse_int_str(tokens[i+1], tmp)) limits.movestogo = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "depth") { int tmp = 0; if (i + 1 < tokens.size() && parse_int_str(tokens[i+1], tmp)) limits.depth = tmp; ++i; }
+                else if (i < tokens.size() && tokens[i] == "nodes") { long long tmp = 0; if (i + 1 < tokens.size() && parse_ll_str(tokens[i+1], tmp)) limits.nodes = tmp; ++i; }
                 else if (i < tokens.size() && tokens[i] == "infinite") { limits.infinite = true; }
             }
             search.start(limits);
